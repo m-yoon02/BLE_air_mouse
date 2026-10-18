@@ -1,0 +1,140 @@
+// BLE Air Mouse — ESP32 + GY-6500 (MPU-6500) + joystick
+// Wave the board to move the cursor
+// tactile button = right-click, push the stick up/down to scroll.
+// Library: ESP32-BLE-Mouse by T-vK (GitHub)
+
+
+#include <Wire.h>
+#include <BleMouse.h>
+
+BleMouse bleMouse("ESP32 Air Mouse", "DIY", 100);
+
+const int MPU_ADDR  = 0x68; // gy-6500 (MPU 65)
+const int SDA_PIN   = 21;  // pin from gy-6500, used for I2c communication ( carry actual data packets back and forth between microcontroller and connected sensors)
+const int SCL_PIN   = 22;  // Serial clock, also for I2C. ( synchronize the timing data) between microcontroller and devices
+const int JOY_Y_PIN = 4;   // joystick VRy (scroll)  — ADC10 pin
+const int LEFT_PIN  = 18;   // joystick SW (press stick down) for left click
+const int RIGHT_PIN = 19;   // push button ( for right click)
+
+// ---- Tuning ----
+const float SPEED    = 0.2;  // cursor speed
+const float DEADZONE = 4;   // deg/s ignored (hand tremor / drift)
+const int   INVERT_X = 1;     // set to -1 if left/right is backwards
+const int   INVERT_Y = 1;     // set to -1 if up/down is backwards
+const bool  PITCH_FROM_Y = false;  // set true if up/down moves the cursor wrong/diagonally
+
+float biasX = 0, biasY = 0, biasZ = 0;  // off set 
+float accX = 0, accY = 0;
+int joyCenter = 2048; // 
+bool leftDown = false, rightDown = false;
+unsigned long lastScroll = 0;
+
+
+// I2C
+void writeReg(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission();
+}
+
+// I2C wire
+uint8_t readReg(uint8_t reg) {   // gets data from the gyro sensor and brings it into the ESP32
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 1);
+  return Wire.read();
+}
+
+void readGyro(float &gx, float &gy, float &gz) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x43);                 // GYRO_XOUT_H
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 6);
+  int16_t x = (Wire.read() << 8) | Wire.read();
+  int16_t y = (Wire.read() << 8) | Wire.read();
+  int16_t z = (Wire.read() << 8) | Wire.read();
+  gx = x / 131.0;                   // ±250 dps range -> 131 LSB per deg/s
+  gy = y / 131.0;
+  gz = z / 131.0;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  writeReg(0x6B, 0x00);   // wake up
+  delay(100);
+  writeReg(0x1B, 0x00);   // gyro ±250 dps
+  writeReg(0x1A, 0x03);   // low-pass filter ~41 Hz
+  Serial.printf("WHO_AM_I = 0x%02X (expect 0x70 for MPU-6500)\n", readReg(0x75));
+
+  pinMode(LEFT_PIN, INPUT_PULLUP);
+  pinMode(RIGHT_PIN, INPUT_PULLUP);
+
+  // Calibrate: average gyro and joystick while still
+  Serial.println("Calibrating, keep still...");
+  long joySum = 0;
+  const int N = 200;
+  for (int i = 0; i < N; i++) {
+    float gx, gy, gz;
+    readGyro(gx, gy, gz);
+    biasX += gx; biasY += gy; biasZ += gz;  // from checking the serial port . and calculate. 
+    joySum += analogRead(JOY_Y_PIN); // start from 0 and incrememnt according to achieved data 
+    delay(5);
+  }
+  biasX /= N; biasY /= N; biasZ /= N;
+  joyCenter = joySum / N;
+  Serial.println("Done. Pair 'ESP32 Air Mouse' in your computer's Bluetooth settings.");
+
+  bleMouse.begin();
+}
+
+void loop() {
+  if (!bleMouse.isConnected()) { delay(100); return; }
+
+  // ---- Motion ----
+  float gx, gy, gz;
+  readGyro(gx, gy, gz);
+  gx -= biasX; gy -= biasY; gz -= biasZ;
+  float yaw   = gz;
+  float pitch = PITCH_FROM_Y ? gy : gx;
+  if (fabs(yaw)   < DEADZONE) yaw = 0;
+  if (fabs(pitch) < DEADZONE) pitch = 0;
+
+  accX += -yaw   * SPEED * INVERT_X;
+  accY += -pitch * SPEED * INVERT_Y;
+  int mx = constrain((int)accX, -127, 127);
+  int my = constrain((int)accY, -127, 127);
+  accX = constrain(accX - mx, -1.0f, 1.0f);   // keep the leftover fraction
+  accY = constrain(accY - my, -1.0f, 1.0f);
+  Serial.printf("gx %6.1f  gy %6.1f  gz %6.1f\n", gx, gy, gz);
+  // ---- Scroll ----
+  int wheel = 0;
+  int j = analogRead(JOY_Y_PIN) - joyCenter;
+  if (abs(j) > 700 && millis() - lastScroll > 80) {
+    wheel = (j > 0) ? -1 : 1;
+    lastScroll = millis();
+  }
+
+  if (mx || my || wheel) bleMouse.move(mx, my, wheel);
+
+  // ---- Buttons ----
+  bool l = digitalRead(LEFT_PIN) == LOW;
+  if (l != leftDown) {
+    if (l) {
+      bleMouse.press(MOUSE_LEFT); 
+    }else bleMouse.release(MOUSE_LEFT);
+    leftDown = l;
+  }
+  bool r = digitalRead(RIGHT_PIN) == LOW;
+  if (r != rightDown) {
+    if (r){
+      bleMouse.press(MOUSE_RIGHT); 
+    }else bleMouse.release(MOUSE_RIGHT);
+    rightDown = r;
+  }
+
+  delay(10);   // ~100 updates per second
+}
