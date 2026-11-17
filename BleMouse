@@ -16,7 +16,7 @@ const int JOY_Y_PIN = 4;   // joystick VRy (scroll)  — ADC10 pin
 const int LEFT_PIN  = 18;   // joystick SW (press stick down) for left click
 const int RIGHT_PIN = 19;   // push button ( for right click)
 
-// ---- Tuning ----
+//Tuning 
 const float SPEED    = 0.2;  // cursor speed
 const float DEADZONE = 4;   // deg/s ignored (hand tremor / drift)
 const int   INVERT_X = 1;     // set to -1 if left/right is backwards
@@ -94,7 +94,7 @@ void setup() {
 void loop() {
   if (!bleMouse.isConnected()) { delay(100); return; }
 
-  // ---- Motion ----
+  // Motion
   float gx, gy, gz;
   readGyro(gx, gy, gz);
   gx -= biasX; gy -= biasY; gz -= biasZ;
@@ -120,7 +120,7 @@ void loop() {
 
   if (mx || my || wheel) bleMouse.move(mx, my, wheel);
 
-  // ---- Buttons ----
+  // Buttons
   bool l = digitalRead(LEFT_PIN) == LOW;
   if (l != leftDown) {
     if (l) {
